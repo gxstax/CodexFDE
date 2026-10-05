@@ -6,9 +6,13 @@ __pycache__/
 # C extensions
 *.so
 .harness-*/
-docs/
+scripts/presentations/*
 .codex-tmp/
 .tmp/
+.course*/
+
+.l01-ppt-build/
+deliverables/
 
 # Distribution / packaging
 .Python
@@ -72,8 +76,8 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
+
+docs/
 
 # PyBuilder
 .pybuilder/

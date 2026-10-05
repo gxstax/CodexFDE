@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from eval.harness import EVALS
-from workbench.course_mainline import LESSONS, create_lesson_task, lesson_baseline_status, lesson_contract, render_lesson_spec, validate_mainline, write_lesson_spec
+from workbench.course_mainline import COURSE_BUILD_THESIS, LESSONS, LESSON_STORY, create_lesson_task, lesson_baseline_status, lesson_contract, render_lesson_spec, validate_mainline, write_lesson_spec
 from workbench.spec import parse_spec
 from workbench.task_store import TaskStore
 from workbench.workflow import prepare_task
@@ -31,6 +31,23 @@ class CourseMainlineTests(unittest.TestCase):
             self.assertTrue(item.write_scope)
             self.assertTrue(item.acceptance)
 
+    def test_codex_fde_story_covers_bootstrap_and_workbench_driven_delivery(self) -> None:
+        self.assertEqual(set(range(1, 17)), set(LESSON_STORY))
+        for lesson in LESSONS:
+            story = lesson.as_dict()
+            with self.subTest(lesson=lesson.number):
+                self.assertTrue(story["codex_role"])
+                self.assertIn("循环", story["fde_loop"])
+                self.assertTrue(story["causal_link"])
+                self.assertEqual(COURSE_BUILD_THESIS, story["course_build_thesis"])
+                self.assertTrue(story["construction_stage"])
+        self.assertIn("共同建造者", LESSON_STORY[3]["codex_role"])
+        self.assertIn("直接监督 Codex", LESSONS[2].request)
+        self.assertIn("协同换挡伙伴", LESSON_STORY[4]["codex_role"])
+        self.assertIn("Workbench V0", LESSON_STORY[4]["codex_role"])
+        self.assertIn("两张 Ticket", LESSONS[3].request)
+        self.assertIn("现场开发伙伴", LESSON_STORY[16]["codex_role"])
+
     def test_all_declared_eval_cases_exist(self) -> None:
         available = {name for name, _level, _fn in EVALS}
         declared = {name for item in LESSONS for name in item.eval_cases}
@@ -43,6 +60,12 @@ class CourseMainlineTests(unittest.TestCase):
         parsed = parse_spec(text)
         self.assertIn("幂等入库", parsed.goal)
         self.assertIn("receiving_is_idempotent", parsed.constraints)
+        self.assertIn("Codex 当讲角色", text)
+        self.assertIn("FDE 循环", text)
+        self.assertIn("因果交接", text)
+        self.assertIn("课程建设主线", text)
+        self.assertIn("通过个人工作台组织人与 AI 协同开发 FlowERP", text)
+        self.assertIn("本讲所在阶段", text)
         self.assertNotIn("采购补货必须经过具名人工审批", text)
         self.assertNotIn("原子预占", parsed.acceptance)
 
@@ -108,6 +131,8 @@ class CourseMainlineTests(unittest.TestCase):
             second = validate_mainline(".", eval_names=available)
 
         self.assertTrue(first["course_ready"])
+        self.assertEqual(first["baseline_semantics"], "progression_gate")
+        self.assertIn("隔离工作区", first["constructibility"])
         self.assertTrue(second["course_ready"])
         self.assertIn("checked_at", second)
         self.assertEqual(2, sum(command[1] == "cat-file" for command in calls))
@@ -125,6 +150,22 @@ class CourseMainlineTests(unittest.TestCase):
     def test_lesson_number_is_validated(self) -> None:
         with self.assertRaisesRegex(ValueError, "1 到 16"):
             lesson_contract(17)
+
+    def test_l07_prepares_reviewable_hook_files_without_authorizing_active_hooks(self) -> None:
+        from workbench.execution import CodexExecutionRunner, normalize_write_scope
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TaskStore(Path(temporary) / "workbench.db")
+            task = create_lesson_task(store, 7, temporary, execution_mode="codex")
+            prepared = prepare_task(store, task["id"])
+            scopes = prepared["write_scope"]
+            self.assertTrue(CodexExecutionRunner._allowed("hook_staging/hooks.json", scopes))
+            self.assertTrue(CodexExecutionRunner._allowed("hook_staging/quality_gate.py", scopes))
+            self.assertFalse(CodexExecutionRunner._allowed(".codex/hooks.json", scopes))
+            self.assertFalse(CodexExecutionRunner._allowed(".codex/hooks/quality_gate.py", scopes))
+            self.assertIn("人工审查后安装", prepared["spec"]["constraints"])
+            self.assertIn("真实事件", prepared["spec"]["acceptance"])
+        with self.assertRaises(ValueError):
+            normalize_write_scope([".codex/hooks"])
 
     def test_missing_baseline_cannot_look_ready(self) -> None:
         result = lesson_baseline_status(".", 4, revision_resolver=lambda _root, _revision: None)

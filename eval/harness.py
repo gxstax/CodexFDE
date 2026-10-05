@@ -10,6 +10,8 @@ from typing import Callable
 
 from . import cases
 
+PROJECT_CASES = frozenset({'illegal_transition_is_blocked', 'purchase_requires_approval', 'stale_stock_count_is_blocked', 'payable_aging_tracks_open_supplier_exposure', 'purchase_request_preserves_reason', 'production_schema_invariants', 'order_total_matches_lines', 'stock_never_negative', 'ecommerce_channel_order_is_idempotent_and_guarded', 'backup_is_restorable', 'bank_statement_control_and_reconciliation', 'channel_callback_lease_is_exclusive_and_bounded', 'multi_location_transfer_conserves_stock', 'inventory_export_is_stable', 'cancellation_releases_reservation', 'receiving_is_idempotent', 'double_entry_fifo_and_subledger_reconciliation', 'purchase_invoice_three_way_match', 'sales_credit_and_atomic_reservation'})
+
 
 @dataclass
 class EvalResult:
@@ -18,9 +20,13 @@ class EvalResult:
     passed: bool
     duration_ms: int
     evidence: str
+    error: dict[str, str] | None = None
 
 
 EVALS: list[tuple[str, str, Callable[[], str]]] = [
+    ("spec_contract_rejects_ambiguity", "blocking", cases.spec_contract_rejects_ambiguity),
+    ("isolated_report_contract_is_honest", "blocking", cases.isolated_report_contract_is_honest),
+    ("bootstrap_evidence_is_honest", "blocking", cases.bootstrap_evidence_is_honest),
     ("inventory_export_is_stable", "blocking", cases.inventory_export_is_stable),
     ("stock_never_negative", "blocking", cases.stock_never_negative),
     ("receiving_is_idempotent", "blocking", cases.receiving_is_idempotent),
@@ -43,8 +49,12 @@ EVALS: list[tuple[str, str, Callable[[], str]]] = [
     ("plugin_lifecycle_is_reversible", "blocking", cases.plugin_lifecycle_is_reversible),
     ("delivery_evidence_and_review_controls", "blocking", cases.delivery_evidence_and_review_controls),
     ("web_api_and_persistence_projection_agree", "blocking", cases.web_api_and_persistence_projection_agree),
+    ("ci_evidence_envelope_is_honest", "blocking", cases.ci_evidence_envelope_is_honest),
+    ("write_sets_reject_conflict", "blocking", cases.write_sets_reject_conflict),
+    ("raw_feedback_cannot_become_blocking", "blocking", cases.raw_feedback_cannot_become_blocking),
     ("no_committed_secrets", "blocking", cases.no_committed_secrets),
     ("course_assets_present", "observing", cases.course_assets_present),
+    ("ecommerce_lineage_is_declared", "observing", cases.ecommerce_lineage_is_declared),
 ]
 
 
@@ -56,23 +66,31 @@ def run_suite(suite: str = "all", write_report: bool = True,
     unknown = sorted(set(case_names or ()) - available)
     if unknown: raise ValueError(f"未知 Eval：{', '.join(unknown)}")
     selected = [item for item in EVALS if suite == "all" or item[1] == suite]
+    if not case_names:
+        selected = [item for item in selected if item[0] not in PROJECT_CASES]
     if case_names:
         requested = set(case_names)
         selected = [item for item in selected if item[0] in requested]
+        if omitted := requested - {name for name, _level, _fn in selected}:
+            raise ValueError("请求的 Eval 不属于当前 suite：" + ", ".join(sorted(omitted)))
+    if not selected:
+        raise ValueError("当前 suite 没有可执行用例，不能返回空绿灯")
     results: list[EvalResult] = []
     for name, level, fn in selected:
         start = time.perf_counter()
+        error = None
         try:
             evidence = fn(); passed = True
         except Exception as exc:
             evidence = f"{type(exc).__name__}: {exc}"; passed = False
-        results.append(EvalResult(name, level, passed, round((time.perf_counter() - start) * 1000), evidence))
+            error = {"type": type(exc).__name__, "message": str(exc)}
+        results.append(EvalResult(name, level, passed, round((time.perf_counter() - start) * 1000), evidence, error))
     blocking_failed = sum(not r.passed and r.level == "blocking" for r in results)
     observing_failed = sum(not r.passed and r.level == "observing" for r in results)
     report = {
         "schema_version": "1.0",
         "suite": suite,
-        "requested_cases": list(case_names or ()),
+        "requested_cases": list(dict.fromkeys(case_names or ())),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {"total": len(results), "passed": sum(r.passed for r in results), "blocking_failed": blocking_failed, "observing_failed": observing_failed, "decision": "pass" if blocking_failed == 0 else "block"},
         "results": [asdict(r) for r in results],

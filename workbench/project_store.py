@@ -34,6 +34,9 @@ class ProjectStore:
                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY(operation,idempotency_key)
                 );
+                CREATE TABLE IF NOT EXISTS workbench_settings(
+                  key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
                 """
             )
 
@@ -51,7 +54,7 @@ class ProjectStore:
             conn.close()
 
     def create(self, name: str, root_path: str | Path,
-               eval_command: list[str], project_id: str = "") -> dict:
+               eval_command: list[str], project_id: str = "", *, allow_pending_eval=False) -> dict:
         label = name.strip()
         root = Path(root_path).resolve()
         command = [str(part).strip() for part in eval_command if str(part).strip()]
@@ -61,7 +64,7 @@ class ProjectStore:
             raise ValueError("目标项目目录不存在")
         if not (root / ".git").exists():
             raise ValueError("目标项目必须是独立 Git 工作区")
-        if not command:
+        if not command and not allow_pending_eval:
             raise ValueError("项目必须声明 Eval 命令")
         identifier = project_id.strip() or f"PROJECT-{uuid.uuid4().hex[:10].upper()}"
         if not identifier.startswith("PROJECT-"):
@@ -91,6 +94,35 @@ class ProjectStore:
             item["eval_command"] = json.loads(item.pop("eval_command_json"))
             items.append(item)
         return items
+
+    def rename(self, project_id: str, name: str) -> dict:
+        """Change the display name without replacing identity or linked records."""
+        label = name.strip()
+        if not label:
+            raise ValueError("项目名称不能为空")
+        self.get(project_id)
+        with self.connect() as conn:
+            conn.execute("UPDATE harness_projects SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         (label, project_id))
+        return self.get(project_id)
+
+    def set_default(self, project_id: str) -> dict:
+        item = self.get(project_id)
+        with self.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO workbench_settings VALUES ('default_project', ?)", (project_id,))
+        return item
+
+    def configure(self, project_id: str, command: list[str]) -> dict:
+        self.get(project_id)
+        with self.connect() as conn:
+            conn.execute('UPDATE harness_projects SET eval_command_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (json.dumps(command, ensure_ascii=False), project_id))
+        return self.get(project_id)
+
+    def default(self) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM workbench_settings WHERE key='default_project'").fetchone()
+        return self.get(row['value']) if row else None
 
     def idempotent(self, operation: str, key: str, payload: object, producer) -> dict:
         token = key.strip()
@@ -126,3 +158,31 @@ class ProjectStore:
                 raise ValueError("幂等请求发生冲突")
             return json.loads(row["response_json"])
         return result
+
+
+def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="核对或修正已登记本地项目的显示名称")
+    parser.add_argument('--runtime-dir', type=Path, required=True)
+    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--name', help='省略时仅查看；填写时修改此目录对应的项目显示名')
+    args = parser.parse_args()
+    database = args.runtime_dir / 'workbench.db'
+    try:
+        if not database.is_file():
+            raise ValueError('运行目录没有工作台数据库，请先启动本讲工作台')
+        store = ProjectStore(database)
+        item = next((p for p in store.list() if Path(p['root_path']).resolve() == args.root.resolve()), None)
+        if item is None:
+            raise ValueError('源码目录尚未登记，请使用首页的管理项目入口')
+        if args.name is not None:
+            item = store.rename(item['id'], args.name)
+        print(json.dumps(item, ensure_ascii=False, indent=2))
+        return 0
+    except (ValueError, OSError, KeyError) as error:
+        print(json.dumps({'status': 'failed', 'error': str(error)}, ensure_ascii=False))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
